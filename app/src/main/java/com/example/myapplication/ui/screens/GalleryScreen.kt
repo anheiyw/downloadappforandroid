@@ -327,7 +327,7 @@ private fun MediaGridItem(
             modifier = Modifier.fillMaxSize()
         )
 
-        // Video indicator
+        // Video/Audio indicator
         if (media.type == MediaType.VIDEO) {
             Box(
                 modifier = Modifier
@@ -344,6 +344,24 @@ private fun MediaGridItem(
                     contentDescription = "视频",
                     tint = Color.White,
                     modifier = Modifier.size(32.dp)
+                )
+            }
+        } else if (media.type == MediaType.AUDIO) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.Center)
+                    .size(48.dp)
+                    .background(
+                        Color.Black.copy(alpha = 0.5f),
+                        CircleShape
+                    ),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    Icons.Default.Headphones,
+                    contentDescription = "音频",
+                    tint = Color.White,
+                    modifier = Modifier.size(28.dp)
                 )
             }
         }
@@ -526,6 +544,24 @@ private fun MediaListItem(
                             modifier = Modifier.size(20.dp)
                         )
                     }
+                } else if (media.type == MediaType.AUDIO) {
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.Center)
+                            .size(32.dp)
+                            .background(
+                                Color.Black.copy(alpha = 0.5f),
+                                CircleShape
+                            ),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            Icons.Default.Headphones,
+                            contentDescription = "音频",
+                            tint = Color.White,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
                 }
             }
 
@@ -548,15 +584,17 @@ private fun MediaListItem(
             }
 
             // Type badge
+            val (typeLabel, typeColor) = when (media.type) {
+                MediaType.VIDEO -> "视频" to MaterialTheme.colorScheme.secondaryContainer
+                MediaType.AUDIO -> "音频" to MaterialTheme.colorScheme.primaryContainer
+                MediaType.IMAGE -> "图片" to MaterialTheme.colorScheme.tertiaryContainer
+            }
             Surface(
-                color = if (media.type == MediaType.VIDEO)
-                    MaterialTheme.colorScheme.secondaryContainer
-                else
-                    MaterialTheme.colorScheme.tertiaryContainer,
+                color = typeColor,
                 shape = RoundedCornerShape(4.dp)
             ) {
                 Text(
-                    text = if (media.type == MediaType.VIDEO) "视频" else "图片",
+                    text = typeLabel,
                     modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
                     style = MaterialTheme.typography.labelSmall
                 )

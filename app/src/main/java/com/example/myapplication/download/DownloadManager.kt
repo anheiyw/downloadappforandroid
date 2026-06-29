@@ -385,16 +385,28 @@ class DownloadManager(private val context: Context, private val cookieJar: Share
         itemId: String,
         onProgress: (Float) -> Unit
     ): Uri {
+        val mimeType = when (type) {
+            MediaType.VIDEO -> "video/mp4"
+            MediaType.AUDIO -> "audio/mp4"
+            MediaType.IMAGE -> "image/jpeg"
+        }
+        val relativePath = when (type) {
+            MediaType.VIDEO -> Environment.DIRECTORY_MOVIES + "/MediaDownloader"
+            MediaType.AUDIO -> Environment.DIRECTORY_MUSIC + "/MediaDownloader"
+            MediaType.IMAGE -> Environment.DIRECTORY_PICTURES + "/MediaDownloader"
+        }
         val contentValues = ContentValues().apply {
             put(MediaStore.MediaColumns.DISPLAY_NAME, filename)
-            put(MediaStore.MediaColumns.MIME_TYPE, if (type == MediaType.VIDEO) "video/mp4" else "image/jpeg")
-            put(MediaStore.MediaColumns.RELATIVE_PATH, if (type == MediaType.VIDEO) Environment.DIRECTORY_MOVIES + "/MediaDownloader"
-                else Environment.DIRECTORY_PICTURES + "/MediaDownloader")
+            put(MediaStore.MediaColumns.MIME_TYPE, mimeType)
+            put(MediaStore.MediaColumns.RELATIVE_PATH, relativePath)
         }
 
         val contentResolver = context.contentResolver
-        val collection = if (type == MediaType.VIDEO) MediaStore.Video.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
-            else MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
+        val collection = when (type) {
+            MediaType.VIDEO -> MediaStore.Video.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
+            MediaType.AUDIO -> MediaStore.Audio.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
+            MediaType.IMAGE -> MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
+        }
 
         val uri = contentResolver.insert(collection, contentValues) ?: throw Exception("Failed to create MediaStore entry")
 
@@ -424,7 +436,11 @@ class DownloadManager(private val context: Context, private val cookieJar: Share
         itemId: String,
         onProgress: (Float) -> Unit
     ): Uri {
-        val folderName = if (type == MediaType.VIDEO) "Movies/MediaDownloader" else "Pictures/MediaDownloader"
+        val folderName = when (type) {
+            MediaType.VIDEO -> "Movies/MediaDownloader"
+            MediaType.AUDIO -> "Music/MediaDownloader"
+            MediaType.IMAGE -> "Pictures/MediaDownloader"
+        }
         val folder = File(Environment.getExternalStorageDirectory(), folderName)
         if (!folder.exists()) folder.mkdirs()
 
@@ -455,7 +471,12 @@ class DownloadManager(private val context: Context, private val cookieJar: Share
         } else {
             uri
         }
-        intent.setDataAndType(contentUri, if (type == MediaType.VIDEO) "video/mp4" else "image/jpeg")
+        val mimeType = when (type) {
+            MediaType.VIDEO -> "video/mp4"
+            MediaType.AUDIO -> "audio/mp4"
+            MediaType.IMAGE -> "image/jpeg"
+        }
+        intent.setDataAndType(contentUri, mimeType)
         intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         return intent
     }
@@ -505,6 +526,45 @@ class DownloadManager(private val context: Context, private val cookieJar: Share
                     }
                 }
                 return@withContext Result.failure(fileResult.exceptionOrNull() ?: Exception("Image download failed"))
+            }
+
+            // Audio-only download: download audio stream, save as M4A
+            if (type == MediaType.AUDIO) {
+                val cachePrefix = itemId.ifBlank { filename }
+                    .replace(Regex("[^A-Za-z0-9._-]"), "_")
+                    .take(80)
+                val audioFile = File(context.cacheDir, "${cachePrefix}_audio_only.m4s")
+
+                try {
+                    onProgress(0.05f)
+                    Log.d(TAG, "Bilibili DASH: downloading audio-only stream...")
+                    val audioResult = downloadBilibiliFile(url, "${cachePrefix}_audio_only.m4s", MediaType.AUDIO, referer, itemId) { p ->
+                        onProgress(p * 0.9f)
+                    }
+                    if (audioResult.isFailure) {
+                        return@withContext Result.failure(audioResult.exceptionOrNull() ?: Exception("Audio stream download failed"))
+                    }
+
+                    checkCancelPause(itemId)
+                    onProgress(0.95f)
+
+                    val uri = saveFileToMediaStore(audioFile, filename, MediaType.AUDIO)
+                    if (uri != null) {
+                        onProgress(1f)
+                        val media = DownloadedMedia(
+                            id = System.currentTimeMillis(),
+                            filename = filename,
+                            uri = uri,
+                            type = MediaType.AUDIO,
+                            timestamp = System.currentTimeMillis()
+                        )
+                        historyManager.saveMedia(media)
+                        return@withContext Result.success(media)
+                    }
+                    return@withContext Result.failure(Exception("Failed to save audio file to MediaStore"))
+                } finally {
+                    audioFile.delete()
+                }
             }
 
             val cachePrefix = itemId.ifBlank { filename }
@@ -632,51 +692,100 @@ class DownloadManager(private val context: Context, private val cookieJar: Share
             checkCancelPause(itemId)
             val bilibiliReferer = if (referer.contains("bilibili.com")) referer else "https://www.bilibili.com"
 
-            val request = Request.Builder()
-                .url(url)
-                .header("User-Agent", DESKTOP_UA)
-                .header("Accept", "*/*")
-                .header("Referer", bilibiliReferer)
-                .header("Origin", "https://www.bilibili.com")
-                .build()
-
-            val call = client.newCall(request)
-            if (itemId.isNotEmpty()) activeCalls[itemId] = call
-
-            val response = call.execute()
-            if (!response.isSuccessful) {
-                response.close()
-                activeCalls.remove(itemId)
-                return@withContext Result.failure(Exception("Bilibili HTTP ${response.code}"))
+            // For images, try without Origin header first (image CDN may reject it)
+            val strategies = if (type == MediaType.IMAGE) {
+                listOf(
+                    // Strategy 1: Standard headers with Referer only (no Origin for image CDN)
+                    Request.Builder()
+                        .url(url)
+                        .header("User-Agent", DESKTOP_UA)
+                        .header("Accept", "image/*, */*")
+                        .header("Referer", bilibiliReferer)
+                        .build(),
+                    // Strategy 2: Fallback with Origin header
+                    Request.Builder()
+                        .url(url)
+                        .header("User-Agent", DESKTOP_UA)
+                        .header("Accept", "*/*")
+                        .header("Referer", bilibiliReferer)
+                        .header("Origin", "https://www.bilibili.com")
+                        .build()
+                )
+            } else {
+                listOf(
+                    Request.Builder()
+                        .url(url)
+                        .header("User-Agent", DESKTOP_UA)
+                        .header("Accept", "*/*")
+                        .header("Referer", bilibiliReferer)
+                        .header("Origin", "https://www.bilibili.com")
+                        .build()
+                )
             }
 
-            val body = response.body ?: run {
-                activeCalls.remove(itemId)
-                return@withContext Result.failure(Exception("Empty response"))
-            }
+            var lastError: Exception? = null
+            for ((index, request) in strategies.withIndex()) {
+                try {
+                    checkCancelPause(itemId)
+                    Log.d(TAG, "Bilibili file strategy ${index + 1}/${strategies.size}")
 
-            val contentLength = body.contentLength()
-            val file = File(context.cacheDir, filename)
+                    val call = client.newCall(request)
+                    if (itemId.isNotEmpty()) activeCalls[itemId] = call
 
-            file.outputStream().use { outputStream ->
-                val buffer = ByteArray(8192)
-                var totalBytesRead = 0L
-                var bytesRead: Int
+                    val response = call.execute()
+                    if (!response.isSuccessful) {
+                        Log.d(TAG, "Bilibili file HTTP ${response.code} for strategy ${index + 1}")
+                        val errorBody = response.body?.string()?.take(200) ?: "no body"
+                        Log.d(TAG, "Error body: $errorBody")
+                        lastError = Exception("Bilibili HTTP ${response.code}")
+                        response.close()
+                        activeCalls.remove(itemId)
+                        continue
+                    }
 
-                body.byteStream().use { inputStream ->
-                    while (inputStream.read(buffer).also { bytesRead = it } != -1) {
-                        checkCancelPause(itemId)
-                        outputStream.write(buffer, 0, bytesRead)
-                        totalBytesRead += bytesRead
-                        if (contentLength > 0) {
-                            onProgress(totalBytesRead.toFloat() / contentLength)
+                    val body = response.body ?: run {
+                        lastError = Exception("Empty response")
+                        activeCalls.remove(itemId)
+                        continue
+                    }
+
+                    val contentLength = body.contentLength()
+                    val file = File(context.cacheDir, filename)
+
+                    file.outputStream().use { outputStream ->
+                        val buffer = ByteArray(8192)
+                        var totalBytesRead = 0L
+                        var bytesRead: Int
+
+                        body.byteStream().use { inputStream ->
+                            while (inputStream.read(buffer).also { bytesRead = it } != -1) {
+                                checkCancelPause(itemId)
+                                outputStream.write(buffer, 0, bytesRead)
+                                totalBytesRead += bytesRead
+                                if (contentLength > 0) {
+                                    onProgress(totalBytesRead.toFloat() / contentLength)
+                                }
+                            }
                         }
                     }
+
+                    activeCalls.remove(itemId)
+                    return@withContext Result.success(file)
+                } catch (e: DownloadCancelledException) {
+                    activeCalls.remove(itemId)
+                    return@withContext Result.failure(e)
+                } catch (e: DownloadPausedException) {
+                    activeCalls.remove(itemId)
+                    return@withContext Result.failure(e)
+                } catch (e: Exception) {
+                    lastError = e
+                    activeCalls.remove(itemId)
+                    Log.d(TAG, "Bilibili file strategy ${index + 1} exception: ${e.message}")
                 }
             }
 
             activeCalls.remove(itemId)
-            Result.success(file)
+            Result.failure(lastError ?: Exception("Bilibili download failed"))
         } catch (e: DownloadCancelledException) {
             activeCalls.remove(itemId)
             Result.failure(e)
@@ -691,16 +800,28 @@ class DownloadManager(private val context: Context, private val cookieJar: Share
 
     private fun saveFileToMediaStore(sourceFile: File, filename: String, type: MediaType): Uri? {
         return try {
+            val mimeType = when (type) {
+                MediaType.VIDEO -> "video/mp4"
+                MediaType.AUDIO -> "audio/mp4"
+                MediaType.IMAGE -> "image/jpeg"
+            }
+            val relativePath = when (type) {
+                MediaType.VIDEO -> Environment.DIRECTORY_MOVIES + "/MediaDownloader"
+                MediaType.AUDIO -> Environment.DIRECTORY_MUSIC + "/MediaDownloader"
+                MediaType.IMAGE -> Environment.DIRECTORY_PICTURES + "/MediaDownloader"
+            }
             val contentValues = ContentValues().apply {
                 put(MediaStore.MediaColumns.DISPLAY_NAME, filename)
-                put(MediaStore.MediaColumns.MIME_TYPE, if (type == MediaType.VIDEO) "video/mp4" else "image/jpeg")
-                put(MediaStore.MediaColumns.RELATIVE_PATH, if (type == MediaType.VIDEO) Environment.DIRECTORY_MOVIES + "/MediaDownloader"
-                    else Environment.DIRECTORY_PICTURES + "/MediaDownloader")
+                put(MediaStore.MediaColumns.MIME_TYPE, mimeType)
+                put(MediaStore.MediaColumns.RELATIVE_PATH, relativePath)
             }
 
             val contentResolver = context.contentResolver
-            val collection = if (type == MediaType.VIDEO) MediaStore.Video.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
-                else MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
+            val collection = when (type) {
+                MediaType.VIDEO -> MediaStore.Video.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
+                MediaType.AUDIO -> MediaStore.Audio.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
+                MediaType.IMAGE -> MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
+            }
 
             val uri = contentResolver.insert(collection, contentValues) ?: return null
 

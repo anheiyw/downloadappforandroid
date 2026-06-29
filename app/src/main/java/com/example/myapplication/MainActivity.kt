@@ -8,6 +8,8 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedContentTransitionScope
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
@@ -43,7 +45,8 @@ class MainActivity : ComponentActivity() {
         val permissions = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             arrayOf(
                 Manifest.permission.READ_MEDIA_IMAGES,
-                Manifest.permission.READ_MEDIA_VIDEO
+                Manifest.permission.READ_MEDIA_VIDEO,
+                Manifest.permission.READ_MEDIA_AUDIO
             )
         } else {
             arrayOf(Manifest.permission.WRITE_EXTERNAL_STORAGE)
@@ -62,18 +65,27 @@ class MainActivity : ComponentActivity() {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MainScreen() {
-    var selectedTab by remember { mutableIntStateOf(0) }
+    var selectedTab by remember { mutableIntStateOf(1) } // 默认选中Bilibili
     val tabs = listOf(
-        TabItem("Twitter/X", Icons.Default.AlternateEmail),
-        TabItem("Bilibili", Icons.Default.PlayCircle),
-        TabItem("Instagram", Icons.Default.PhotoCamera),
-        TabItem("Gallery", Icons.Default.PhotoLibrary)
+        TabItem("X / 推特", Icons.Default.AlternateEmail),
+        TabItem("B站", Icons.Default.SmartDisplay),
+        TabItem("INS", Icons.Default.PhotoCamera),
+        TabItem("下载", Icons.Default.FolderOpen)
     )
 
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Media Downloader") },
+                title = {
+                    Text(
+                        when (selectedTab) {
+                            0 -> "X / 推特下载"
+                            1 -> "B站视频下载"
+                            2 -> "Instagram 下载"
+                            else -> "我的下载"
+                        }
+                    )
+                },
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = MaterialTheme.colorScheme.primaryContainer,
                     titleContentColor = MaterialTheme.colorScheme.onPrimaryContainer
@@ -87,7 +99,12 @@ fun MainScreen() {
                         selected = selectedTab == index,
                         onClick = { selectedTab = index },
                         icon = { Icon(tab.icon, contentDescription = tab.title) },
-                        label = { Text(tab.title) }
+                        label = { Text(tab.title) },
+                        colors = NavigationBarItemDefaults.colors(
+                            selectedIconColor = MaterialTheme.colorScheme.primary,
+                            selectedTextColor = MaterialTheme.colorScheme.primary,
+                            indicatorColor = MaterialTheme.colorScheme.primaryContainer
+                        )
                     )
                 }
             }

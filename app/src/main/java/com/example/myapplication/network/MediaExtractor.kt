@@ -1366,17 +1366,43 @@ class MediaExtractor(val cookieJar: SharedCookieJar = SharedCookieJar()) {
                         ) else emptyMap()
                     ))
 
+                    // Add audio-only download option when DASH audio stream is available
+                    if (audioUrl.isNotEmpty()) {
+                        val audioCodec = dashResult.optString("audioCodec", "")
+                        val audioBandwidth = dashResult.optLong("audioBandwidth", 0L)
+                        val audioQualityLabel = if (audioBandwidth > 0) {
+                            val kbps = audioBandwidth / 1000
+                            "${audioCodec.ifEmpty { "Audio" }} · ${kbps}kbps"
+                        } else {
+                            audioCodec.ifEmpty { "Audio" }
+                        }
+                        items.add(MediaItem(
+                            id = "${bvid}-audio",
+                            url = audioUrl,
+                            type = MediaType.AUDIO,
+                            filename = "bilibili_${bvid}_audio.m4a",
+                            referer = "https://www.bilibili.com/video/$bvid",
+                            extraData = mapOf(
+                                "title" to safeTitle,
+                                "quality" to qualityDesc,
+                                "codecs" to audioCodec
+                            )
+                        ))
+                    }
+
                     if (pic.isNotEmpty()) {
+                        // Upgrade http:// to https:// (Android blocks cleartext HTTP by default)
+                        val securePic = if (pic.startsWith("http://")) pic.replaceFirst("http://", "https://") else pic
                         items.add(MediaItem(
                             id = "${bvid}-cover",
-                            url = pic,
+                            url = securePic,
                             type = MediaType.IMAGE,
                             filename = "bilibili_${bvid}_cover.jpg",
                             referer = "https://www.bilibili.com/video/$bvid"
                         ))
                     }
 
-                    Log.d(TAG, "Bilibili: DASH video found, quality=$qualityDesc")
+                    Log.d(TAG, "Bilibili: DASH video found, quality=$qualityDesc, audio=${if (audioUrl.isNotEmpty()) "yes" else "no"}")
                     return@withContext Result.success(MediaInfo(items, "https://www.bilibili.com/video/$bvid"))
                 }
             }
@@ -1518,11 +1544,15 @@ class MediaExtractor(val cookieJar: SharedCookieJar = SharedCookieJar()) {
 
                     val bestAudio = chooseBestBilibiliStream(audioArray, preferAvc = false)
                     val audioUrl = getBilibiliStreamUrl(bestAudio)
+                    val audioCodec = bestAudio?.optString("codecs", "")?.take(30) ?: ""
+                    val audioBandwidth = bestAudio?.optLong("bandwidth", 0L) ?: 0L
 
                     val result = JSONObject()
                     result.put("videoUrl", videoUrl)
                     result.put("audioUrl", audioUrl)
                     result.put("qualityDesc", qualityDesc)
+                    result.put("audioCodec", audioCodec)
+                    result.put("audioBandwidth", audioBandwidth)
                     return result
                 }
             }
